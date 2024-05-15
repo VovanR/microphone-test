@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Microphone Test</title>
+
+    <style>
+      html,
+      body {
+        height: 100%;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        font-size: 100%;
+        margin: 0;
+        padding: 0.5em;
+      }
+
+      table {
+        font-family: monospace;
+      }
+
+      .volume-stat {
+        margin-bottom: 0.75em;
+
+        .volume-stat__value {
+          min-width: 3em;
+          text-align: right;
+        }
+
+        output {
+          /* display: inline-block; */
+          text-align: right;
+          /* width: 2em; */
+          font-variant-numeric: tabular-nums;
+        }
+      }
+
+      button {
+        font-size: inherit;
+      }
+
+      canvas {
+        border: 3px solid white;
+        box-shadow: 0 0 0px 1px silver;
+        border-radius: 0.125em;
+        background-color: black;
+        image-rendering: pixelated;
+        width: 100%;
+      }
+
+      #error-message {
+        display: none;
+        color: #48161f;
+        background-color: pink;
+        padding: 0.5em 1em;
+        border-radius: 0.125em;
+
+        output {
+          font-family: monospace;
+        }
+      }
+
+      .refresh-interval {
+        margin-bottom: 0.5em;
+
+        output {
+          font-family: monospace;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <form action="">
+      <table class="volume-stat">
+        <tbody>
+          <tr>
+            <td>
+              vol
+            </td>
+            <td>
+              <meter
+                id="volume-visualizer"
+                name="volume"
+                value="0"
+                min="0"
+                max="255"
+                low="10"
+                high="90"
+                optimum="50"
+              ></meter>
+            </td>
+            <td class="volume-stat__value">
+              <output id="volume-value">0.0</output>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              min
+            </td>
+            <td>
+              <meter
+                id="volume-min-visualizer"
+                name="volume-min"
+                value="0"
+                min="0"
+                max="255"
+                low="10"
+                high="90"
+                optimum="50"
+              ></meter>
+            </td>
+            <td class="volume-stat__value">
+              <output id="volume-min-value">0.0</output>
+            </td>
+          </tr>
+          <tr>
+            <td>
+              max
+            </td>
+            <td>
+              <meter
+                id="volume-max-visualizer"
+                name="volume-max"
+                value="0"
+                min="0"
+                max="255"
+                low="10"
+                high="90"
+                optimum="50"
+              ></meter>
+            </td>
+            <td class="volume-stat__value">
+              <output id="volume-max-value">0.0</output>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <canvas id="canvas" width="512" height="128"></canvas>
+
+      <div class="refresh-interval">
+        <input
+          id="refresh-interval"
+          type="range"
+          min="0"
+          max="120"
+          step="10"
+          value="30"
+          list="refresh-interval-markers"
+        />
+        <datalist id="refresh-interval-markers">
+          <option value="0"></option>
+          <option value="30"></option>
+          <option value="60"></option>
+          <option value="90"></option>
+          <option value="120"></option>
+        </datalist>
+        <output id="refresh-interval-value" for="refresh-interval">30</output>&thinsp;<span style="font-family: monospace;">ms</span>
+      </div>
+      <footer>
+        <button type="button" id="start">⏵Start</button>
+        <button type="button" id="stop">⏸Pause</button>
+        <div id="error-message">
+          <header></header>
+          <output></output>
+        </div>
+      </footer>
+    </form>
+
+    <script>
+      (async () => {
+        const DEFAULTS = {
+          canvas: {
+            width: 256,
+            height: 64,
+          },
+        };
+
+        let volumeCallback = null;
+        let volumeInterval = null;
+        const volumeVisualizer = document.getElementById("volume-visualizer");
+        const volumeMinVisualizer = document.getElementById("volume-min-visualizer");
+        const volumeMaxVisualizer = document.getElementById("volume-max-visualizer");
+        const volumeValue = document.querySelector("#volume-value");
+        const volumeMinValue = document.querySelector("#volume-min-value");
+        const volumeMaxValue = document.querySelector("#volume-max-value");
+        const refreshIntervalInput = document.querySelector("#refresh-interval");
+        const refreshIntervalValue = document.querySelector("#refresh-interval-value");
+        const startButton = document.getElementById("start");
+        const stopButton = document.getElementById("stop");
+        /**
+         * @type HTMLCanvasElement
+         */
+        const canvas = document.querySelector("#canvas");
+        // Initialize
+        try {
+          const audioStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+            },
+          });
+          const audioContext = new AudioContext();
+          const audioSource = audioContext.createMediaStreamSource(audioStream);
+          const analyser = audioContext.createAnalyser();
+          analyser.fftSize = 512;
+          analyser.minDecibels = -127;
+          analyser.maxDecibels = 0;
+          analyser.smoothingTimeConstant = 0.4;
+          audioSource.connect(analyser);
+          const volumes = new Uint8Array(analyser.frequencyBinCount);
+
+          const canvasWidth = parseInt(canvas.getAttribute("width"), 10) ?? DEFAULTS.canvas.width;
+          const canvasHeight = parseInt(canvas.getAttribute("height"), 10) ?? DEFAULTS.canvas.height;
+          canvas.setAttribute("width", canvasWidth);
+          canvas.setAttribute("height", canvasHeight);
+          const canvasContext = canvas.getContext("2d");
+          canvasContext.imageSmoothingEnabled = false;
+          canvasContext.clearRect(0, 0, canvasWidth, canvasHeight);
+
+          volumeCallback = () => {
+            analyser.getByteFrequencyData(volumes);
+
+            canvasContext.fillStyle = "rgb(0 0 0)";
+            canvasContext.fillRect(0, 0, canvasWidth, canvasHeight);
+            const barWidth = (canvasWidth / volumes.length) * 1;
+            let barHeight = 0;
+            let x = 0;
+
+            let volumeSum = 0;
+            let volumeMin = Infinity;
+            let volumeMax = 0;
+
+            for (let i = 0; i < volumes.length; i += 1) {
+              const volume = volumes[i];
+              volumeSum += volume;
+              volumeMin = Math.min(volumeMin, volume);
+              volumeMax = Math.max(volumeMax, volume);
+
+              barHeight = volume;
+              canvasContext.fillStyle = `rgb(${barHeight + 100} 50 50)`;
+              canvasContext.fillRect(
+                x,
+                canvasHeight - barHeight / 2,
+                barWidth,
+                barHeight / 2
+              );
+              x += barWidth;
+            }
+            const averageVolume = volumeSum / volumes.length;
+            // Value range: 127 = analyser.maxDecibels - analyser.minDecibels;
+            // const valuePercents = (averageVolume * 100) / 127;
+            const valuePercents = averageVolume;
+            volumeVisualizer.value = valuePercents;
+            volumeValue.value = valuePercents.toFixed(1);
+
+            volumeMinValue.value = volumeMin.toFixed(1);
+            volumeMinVisualizer.value = volumeMin;
+
+            volumeMaxValue.value = volumeMax.toFixed(1);
+            volumeMaxVisualizer.value = volumeMax;
+          };
+        } catch (e) {
+          console.error(
+            "Failed to initialize volume visualizer",
+            e
+          );
+
+          volumeCallback = () => {};
+          const errorMessageElement = document.querySelector("#error-message");
+          errorMessageElement.style.display = "block";
+          const titleElement = errorMessageElement.querySelector("header");
+          const messageElement = errorMessageElement.querySelector("output");
+          titleElement.textContent = "Failed to initialize volume visualizer";
+          messageElement.value = e;
+        }
+
+        class Ani {
+          _interval = 100;
+          _callback = () => {};
+          _timestamp = -1;
+          _requestID = -1;
+          _isStarted = false;
+
+          /**
+           * @param {Object} options
+           * @param {() => void} options.callback
+           * @param {number} options.interval
+           */
+          constructor({
+            callback,
+            interval = 100,
+          }) {
+            this._callback = callback;
+            this._interval = interval;
+          }
+
+          _tick(timestamp) {
+            if (this._timestamp === -1) {
+              this._timestamp = timestamp;
+            }
+            const delay = timestamp - this._timestamp;
+            if (delay >= this._interval) {
+              this._callback();
+              this._timestamp = timestamp;
+            }
+            this._requestID = window.requestAnimationFrame((timestamp) => this._tick(timestamp));
+          }
+
+          start() {
+            this._requestID = window.requestAnimationFrame((timestamp) => this._tick(timestamp));
+            this._isStarted = true;
+          }
+
+          stop() {
+            window.cancelAnimationFrame(this._requestID);
+            this._isStarted = false;
+          }
+
+          isStarted() {
+            return this._isStarted;
+          }
+
+          setInterval(interval = 100) {
+            if (
+              typeof interval !== "number" ||
+              !Number.isFinite(interval) ||
+              interval < 0
+            ) {
+              throw new Error("Interval must be a positive number");
+            }
+            this._interval = interval;
+          }
+        }
+
+        const animat = new Ani({
+          callback() {
+            volumeCallback();
+          },
+          interval: 30,
+        });
+
+        startButton.addEventListener("click", () => {
+          // if (volumeCallback !== null && volumeInterval === null) {
+          if (volumeCallback !== null && !animat.isStarted()) {
+            // volumeInterval = setInterval(volumeCallback, 100);
+            animat.start();
+          }
+        });
+
+        stopButton.addEventListener("click", () => {
+          // if (volumeInterval !== null) {
+            // clearInterval(volumeInterval);
+            // volumeInterval = null;
+            animat.stop();
+          // }
+        });
+
+        refreshIntervalInput.addEventListener("change", (event) => {
+          animat.setInterval(event.target.valueAsNumber);
+          refreshIntervalValue.value = event.target.valueAsNumber;
+        });
+      })();
+    </script>
+  </body>
+</html>
